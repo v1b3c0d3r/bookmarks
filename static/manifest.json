@@ -1,0 +1,28 @@
+{
+    "short_name": "Bookmarks",
+    "name": "Bookmarks",
+    "description": "Bookmark Manager",
+    "lang": "en",
+    "categories": ["bookmarks"],
+    "icons": [
+        {
+            "src": "favicon256.png",
+            "type": "image/png",
+            "sizes": "256x256"
+        }
+    ],
+    "id": "bookmarks?source=pwa",
+    "start_url": "../?source=pwa",
+    "background_color": "#ece9f2",
+    "display": "standalone",
+    "display_override": ["standalone", "minimal-ui", "browser"],
+    "launch_handler": {
+        "client_mode": ["focus-existing, auto"]
+    },
+    "orientation": "portrait-primary",
+    "scope": "../",
+    "theme_color": "#d8efff",
+    "protocol_handlers": [],
+    "shortcuts": [],
+    "screenshots": []
+}
