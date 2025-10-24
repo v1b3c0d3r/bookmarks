@@ -57,23 +57,4 @@ This application is designed to be deployed using Docker.
 3.  **Access the application:**
     Open your web browser and navigate to `http://localhost:8000`.
 
-### Initializing the Database
 
-The first time you run the application, you need to initialize the database.
-
-1.  **Find the container ID:**
-    ```bash
-    docker ps
-    ```
-
-2.  **Execute the `init_db` function:**
-    ```bash
-    docker exec -it <container-id> python3 -c "from main import init_db; init_db()"
-    ```
-
-    Alternatively, you can run the `main.py` script directly, which will also initialize the database:
-    ```bash
-    docker exec -it <container-id> python3 main.py
-    ```
-
-    After initializing the database, you can stop the container and restart it using the `docker run` command above.
