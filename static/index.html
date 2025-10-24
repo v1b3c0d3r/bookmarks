@@ -729,12 +729,12 @@
         themeToggleBtn.addEventListener('click', () => {
             const isDarkMode = document.documentElement.classList.contains('dark');
             const newTheme = isDarkMode ? 'light' : 'dark';
-            localStorage.setItem('theme', newTheme);
+            localStorage.setItem('bookmarks.theme', newTheme);
             applyTheme(newTheme);
         });
 
         // On page load, apply the saved theme or the user's preference
-        const savedTheme = localStorage.getItem('theme');
+        const savedTheme = localStorage.getItem('bookmarks.theme');
         const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         applyTheme(savedTheme || (prefersDark ? 'dark' : 'light'));
     </script>
