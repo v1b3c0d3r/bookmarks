@@ -1,5 +1,5 @@
 // byte-to-byte comparison failure will trigger service worker update
-// v20250811
+// v20251024
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
