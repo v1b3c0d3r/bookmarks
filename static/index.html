@@ -131,12 +131,13 @@
             createFolder: (data) => api.request('/folders', { method: 'POST', body: JSON.stringify(data) }),
             updateItem: (type, id, data) => api.request(`/items/${type}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
             deleteItem: (type, id) => api.request(`/items/${type}/${id}`, { method: 'DELETE' }),
+            reorderItems: (type, ids) => api.request(`/items/${type}/reorder`, { method: 'POST', body: JSON.stringify({ ids }) }),
         };
 
         // --- DATA HELPERS ---
         const findItem = (id, type) => (type === 'folder' ? allFolders : allBookmarks).find(item => item.id === id);
-        const getSubFolders = (parentId) => allFolders.filter(f => f.parentId === parentId);
-        const getBookmarksInFolder = (folderId) => allBookmarks.filter(b => b.folderId === folderId);
+        const getSubFolders = (parentId) => allFolders.filter(f => f.parentId === parentId).sort((a,b) => a.position - b.position);
+        const getBookmarksInFolder = (folderId) => allBookmarks.filter(b => b.folderId === folderId).sort((a,b) => a.position - b.position);
 
         // --- RENDER FUNCTIONS ---
         const render = () => {
@@ -302,7 +303,7 @@
             }
         });
 
-        // --- CONTEXT MENU LOGIC (FIXED) ---
+        // --- CONTEXT MENU LOGIC ---
         const showContextMenu = (x, y, isFolder) => {
             hideContextMenu();
             contextMenuEl.style.left = `${x}px`;

@@ -31,6 +31,7 @@ def init_db():
                 name TEXT NOT NULL,
                 parent_id INTEGER,
                 is_open BOOLEAN DEFAULT 0,
+                position INTEGER,
                 FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
             )
         """)
@@ -41,6 +42,7 @@ def init_db():
                 name TEXT NOT NULL,
                 url TEXT NOT NULL,
                 folder_id INTEGER,
+                position INTEGER,
                 FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
             )
         """)
@@ -63,6 +65,7 @@ class Bookmark(BaseModel):
     name: str
     url: str
     folderId: Optional[int] = Field(alias='folderId')
+    position: Optional[int] = None
 
 
 class Folder(BaseModel):
@@ -70,6 +73,7 @@ class Folder(BaseModel):
     name: str
     parentId: Optional[int] = Field(alias='parentId')
     isOpen: bool = Field(alias='isOpen')
+    position: Optional[int] = None
 
 
 class AppData(BaseModel):
@@ -94,6 +98,10 @@ class ItemUpdate(BaseModel):
     parentId: Optional[int] = Field(alias='parentId', default=None)
     folderId: Optional[int] = Field(alias='folderId', default=None)
     isOpen: Optional[bool] = Field(alias='isOpen', default=None)
+
+
+class ReorderRequest(BaseModel):
+    ids: List[int]
 
 
 def retrieve_favicon(url: str) -> Tuple[str, bytes]:
@@ -173,12 +181,13 @@ def get_all_data():
         with sqlite3.connect(DATABASE_FILE) as conn:
             conn.row_factory = dict_factory
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, parent_id, is_open FROM folders")
+            cursor.execute("SELECT id, name, parent_id, is_open, position FROM folders ORDER BY position")
             folders = cursor.fetchall()
-            cursor.execute("SELECT id, name, url, folder_id FROM bookmarks")
+            cursor.execute("SELECT id, name, url, folder_id, position FROM bookmarks ORDER BY position")
             bookmarks = cursor.fetchall()
             return {"folders": folders, "bookmarks": bookmarks}
     except Exception as e:
+        logging.error(f"Error fetching data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -189,9 +198,12 @@ def create_bookmark(bookmark: BookmarkCreate):
     with sqlite3.connect(DATABASE_FILE) as conn:
         conn.row_factory = dict_factory
         cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as count FROM bookmarks WHERE folder_id = ?", (bookmark.folderId,))
+        count = cursor.fetchone()
+        position = count['count'] if count else 0
         cursor.execute(
-            "INSERT INTO bookmarks (name, url, folder_id) VALUES (?, ?, ?)",
-            (bookmark.name, bookmark.url, bookmark.folderId)
+            "INSERT INTO bookmarks (name, url, folder_id, position) VALUES (?, ?, ?, ?)",
+            (bookmark.name, bookmark.url, bookmark.folderId, position)
         )
         new_id = cursor.lastrowid
         if favicon_type is not None:
@@ -200,7 +212,7 @@ def create_bookmark(bookmark: BookmarkCreate):
                 (favicon_type, favicon_data, new_id)
             )
         conn.commit()
-        cursor.execute("SELECT id, name, url, folder_id FROM bookmarks WHERE id = ?", (new_id,))
+        cursor.execute("SELECT id, name, url, folder_id, position FROM bookmarks WHERE id = ?", (new_id,))
         return cursor.fetchone()
 
 
@@ -210,14 +222,34 @@ def create_folder(folder: FolderCreate):
     with sqlite3.connect(DATABASE_FILE) as conn:
         conn.row_factory = dict_factory
         cursor = conn.cursor()
+        if folder.parentId is None:
+            cursor.execute("SELECT COUNT(*) as count FROM folders WHERE parent_id IS NULL")
+        else:
+            cursor.execute("SELECT COUNT(*) as count FROM folders WHERE parent_id = ?", (folder.parentId,))
+        count = cursor.fetchone()
+        position = count['count'] if count else 0
         cursor.execute(
-            "INSERT INTO folders (name, parent_id, is_open) VALUES (?, ?, 0)",
-            (folder.name, folder.parentId)
+            "INSERT INTO folders (name, parent_id, is_open, position) VALUES (?, ?, 0, ?)",
+            (folder.name, folder.parentId, position)
         )
         new_id = cursor.lastrowid
         conn.commit()
-        cursor.execute("SELECT id, name, parent_id, is_open FROM folders WHERE id = ?", (new_id,))
+        cursor.execute("SELECT id, name, parent_id, is_open, position FROM folders WHERE id = ?", (new_id,))
         return cursor.fetchone()
+
+
+@app.post("/api/items/{item_type}/reorder", status_code=200)
+def reorder_items(item_type: str, reorder: ReorderRequest):
+    """Reorders items within a container."""
+    if item_type not in ["folders", "bookmarks"]:
+        raise HTTPException(status_code=400, detail="Invalid item type")
+    table = "folders" if item_type == "folders" else "bookmarks"
+    with sqlite3.connect(DATABASE_FILE) as conn:
+        cursor = conn.cursor()
+        for i, item_id in enumerate(reorder.ids):
+            cursor.execute(f"UPDATE {table} SET position = ? WHERE id = ?", (i, item_id))
+        conn.commit()
+        return {"status": "success"}
 
 
 @app.put("/api/items/{item_type}/{item_id}")
@@ -225,15 +257,24 @@ def update_item(item_type: str, item_id: int, item: ItemUpdate):
     """Updates a folder or a bookmark. Handles renaming, moving, and opening/closing."""
     if item_type not in ["folders", "bookmarks"]:
         raise HTTPException(status_code=400, detail="Invalid item type")
+    table = "folders" if item_type == "folders" else "bookmarks"
+    parent_column = "parent_id" if item_type == "folders" else "folder_id"
     with sqlite3.connect(DATABASE_FILE) as conn:
+        conn.row_factory = dict_factory
         cursor = conn.cursor()
         if item_type == "folders":
             # For moving a folder, we update parent_id. For renaming, we update name.
             if item.name is not None:
                 cursor.execute("UPDATE folders SET name = ? WHERE id = ?", (item.name, item_id))
             if item.parentId is not None or item.parentId == 0: # 0 will be used to move to root
+                if not item.parentId:
+                    cursor.execute("SELECT COUNT(*) as count FROM folders WHERE parent_id IS NULL")
+                else:
+                    cursor.execute("SELECT COUNT(*) as count FROM folders WHERE parent_id = ?", (item.parentId,))
+                count = cursor.fetchone()
+                position = count['count'] if count else 0
                 actual_parent_id = item.parentId if item.parentId != 0 else None
-                cursor.execute("UPDATE folders SET parent_id = ? WHERE id = ?", (actual_parent_id, item_id))
+                cursor.execute("UPDATE folders SET parent_id = ?, position = ? WHERE id = ?", (actual_parent_id, position, item_id))
             if item.isOpen is not None:
                 cursor.execute("UPDATE folders SET is_open = ? WHERE id = ?", (item.isOpen, item_id))
         elif item_type == "bookmarks":
@@ -249,7 +290,10 @@ def update_item(item_type: str, item_id: int, item: ItemUpdate):
                         (favicon_type, favicon_data, item_id)
                     )
             if item.folderId is not None:
-                cursor.execute("UPDATE bookmarks SET folder_id = ? WHERE id = ?", (item.folderId, item_id))
+                cursor.execute(f"SELECT COUNT(*) as count FROM {table} WHERE {parent_column} = ?", (item.folderId,))
+                count = cursor.fetchone()
+                position = count['count'] if count else 0
+                cursor.execute("UPDATE bookmarks SET folder_id = ?, position = ? WHERE id = ?", (item.folderId, position, item_id))
         conn.commit()
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Item not found")

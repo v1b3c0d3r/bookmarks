@@ -138,5 +138,14 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Jetbrains IDEs
 .idea
 
+# Python
+__pycache__/
+*.pyc
+
+# Database
+bookmarks.db
+*.db
+data/
