@@ -8,6 +8,7 @@ RUN pip3 install -r requirements.txt --break-system-packages
 
 COPY static /static
 COPY main.py main.py
+COPY migrate.py migrate.py
 
 EXPOSE 8000
 VOLUME ["/data"]
