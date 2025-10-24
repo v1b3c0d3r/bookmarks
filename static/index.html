@@ -19,9 +19,15 @@
         /* Hide default arrow for summary/details */
         summary::-webkit-details-marker { display: none; }
         .folder-tree-root-drag-over { background-color: #f0f9ff; }
+        .drag-placeholder {
+            background-color: #e0f2fe;
+            border: 2px dashed #93c5fd;
+        }
     </style>
 </head>
 <body class="bg-slate-100 font-sans text-slate-800">
+
+    <div id="drag-separator" class="hidden absolute bg-slate-700 z-50"></div>
 
     <div id="app" class="flex h-screen">
         <!-- Sidebar for Folders -->
@@ -113,6 +119,9 @@
         let allFolders = [];
         let currentFolderId = null;
         let contextTarget = null;
+        let dragAction = null;
+        let dragOverContainer = null;
+        let dragTimeout = null;
 
         // --- API HELPERS ---
         const api = {
@@ -131,12 +140,13 @@
             createFolder: (data) => api.request('/folders', { method: 'POST', body: JSON.stringify(data) }),
             updateItem: (type, id, data) => api.request(`/items/${type}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
             deleteItem: (type, id) => api.request(`/items/${type}/${id}`, { method: 'DELETE' }),
+            reorderItems: (type, ids) => api.request(`/items/${type}/reorder`, { method: 'POST', body: JSON.stringify({ ids }) }),
         };
 
         // --- DATA HELPERS ---
         const findItem = (id, type) => (type === 'folder' ? allFolders : allBookmarks).find(item => item.id === id);
-        const getSubFolders = (parentId) => allFolders.filter(f => f.parentId === parentId);
-        const getBookmarksInFolder = (folderId) => allBookmarks.filter(b => b.folderId === folderId);
+        const getSubFolders = (parentId) => allFolders.filter(f => f.parentId === parentId).sort((a,b) => a.position - b.position);
+        const getBookmarksInFolder = (folderId) => allBookmarks.filter(b => b.folderId === folderId).sort((a,b) => a.position - b.position);
 
         // --- RENDER FUNCTIONS ---
         const render = () => {
@@ -156,6 +166,12 @@
             details.dataset.type = 'folder';
             details.style.marginLeft = `${20}px`;
             details.classList.add('rounded-md');
+
+            details.setAttribute('draggable', 'true');
+            details.addEventListener('dragstart', e => onDragStart(e, folder, 'folder'));
+            details.addEventListener('dragover', e => onFolderDragOver(e, folder));
+            details.addEventListener('dragleave', e => onFolderDragLeave(e));
+            details.addEventListener('drop', e => onFolderDrop(e, folder));
 
             const summary = document.createElement('summary');
             summary.classList.add('p-2', 'rounded-md', 'cursor-pointer', 'hover:bg-slate-100', 'flex', 'items-center', 'justify-between', 'list-none');
@@ -197,9 +213,6 @@
                 });
             }
 
-            makeDraggable(summary);
-            makeDroppable(summary);
-
             summary.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -225,6 +238,10 @@
                 bookmarkEl.dataset.id = bookmark.id;
                 bookmarkEl.dataset.type = 'bookmark';
                 bookmarkEl.className = 'bg-white p-4 rounded-lg shadow-sm border border-slate-200 hover:shadow-md hover:border-sky-300 transition-all cursor-pointer h-28';
+
+                bookmarkEl.setAttribute('draggable', 'true');
+                bookmarkEl.addEventListener('dragstart', e => onDragStart(e, bookmark, 'bookmark'));
+
                 const faviconUrl = new URL('favicon.ico', bookmark.url).href;
                 bookmarkEl.innerHTML = `
                     <div class="flex items-center mb-2">
@@ -247,7 +264,6 @@
                     contextTarget = { id: bookmark.id, type: 'bookmark' };
                     showContextMenu(e.pageX, e.pageY, false);
                 });
-                makeDraggable(bookmarkEl);
             });
         };
 
@@ -302,7 +318,7 @@
             }
         });
 
-        // --- CONTEXT MENU LOGIC (FIXED) ---
+        // --- CONTEXT MENU LOGIC ---
         const showContextMenu = (x, y, isFolder) => {
             hideContextMenu();
             contextMenuEl.style.left = `${x}px`;
@@ -362,54 +378,46 @@
         // --- DRAG AND DROP LOGIC ---
         let draggedElement = null;
 
-        function makeDraggable(el) {
-            el.setAttribute('draggable', 'true');
-            el.addEventListener('dragstart', (e) => {
-                e.stopPropagation();
-                const target = e.target.closest('[data-id]');
-                draggedElement = { id: parseInt(target.dataset.id), type: target.dataset.type };
-                e.dataTransfer.setData('text/plain', '');
-                setTimeout(() => target.classList.add('opacity-50'), 0);
-            });
-            el.addEventListener('dragend', (e) => {
-                draggedElement = null;
-                document.querySelectorAll('.opacity-50, .drag-over').forEach(d => d.classList.remove('opacity-50', 'drag-over'));
-            });
+        const separatorEl = document.getElementById('drag-separator');
+
+        function showSeparator(orientation, x, y, length) {
+            separatorEl.classList.remove('hidden');
+            if (orientation === 'vertical') {
+                separatorEl.style.width = '2px';
+                separatorEl.style.height = `${length}px`;
+                separatorEl.style.transform = `translate(${x}px, ${y}px)`;
+            } else {
+                separatorEl.style.width = `${length}px`;
+                separatorEl.style.height = '2px';
+                separatorEl.style.transform = `translate(${x}px, ${y}px)`;
+            }
         }
 
-        function makeDroppable(el) {
-            el.addEventListener('dragover', (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const targetFolderEl = e.target.closest('[data-type="folder"]');
-                if (targetFolderEl) {
-                    const targetId = parseInt(targetFolderEl.dataset.id);
-                    if (draggedElement && (draggedElement.id !== targetId || draggedElement.type !== 'folder')) {
-                       targetFolderEl.querySelector('summary').classList.add('drag-over');
-                    }
-                }
-            });
-            el.addEventListener('dragleave', (e) => {
-                e.stopPropagation();
-                e.target.closest('summary')?.classList.remove('drag-over');
-            });
-            el.addEventListener('drop', async (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const targetFolderEl = e.target.closest('[data-type="folder"]');
-                targetFolderEl.querySelector('summary').classList.remove('drag-over');
-                if (!draggedElement) return;
-                const targetFolderId = parseInt(targetFolderEl.dataset.id);
-                let payload = {};
-                if (draggedElement.type === 'bookmark') {
-                    payload.folderId = targetFolderId;
-                } else if (draggedElement.type === 'folder') {
-                    if (draggedElement.id == targetFolderId) return;
-                    payload.parentId = targetFolderId;
-                }
-                await api.updateItem(draggedElement.type + 's', draggedElement.id, payload);
-                await loadData();
-            });
+        function hideSeparator() {
+            separatorEl.classList.add('hidden');
         }
-        
+
+        function onDragStart(e, item, type) {
+            e.stopPropagation();
+            draggedElement = { item, type };
+            e.dataTransfer.setData('text/plain', ''); // Necessary for Firefox
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => e.target.classList.add('opacity-50'), 0);
+        }
+
+        document.addEventListener('dragend', (e) => {
+            if (draggedElement) {
+                document.querySelectorAll('.opacity-50').forEach(el => el.classList.remove('opacity-50'));
+                draggedElement = null;
+                hideSeparator();
+                clearTimeout(dragTimeout);
+                if (dragOverContainer) {
+                    dragOverContainer.classList.remove('drag-over');
+                    dragOverContainer = null;
+                }
+            }
+        });
+
         folderTreeEl.addEventListener('dragover', (e) => {
             e.preventDefault();
             if (draggedElement?.type === 'folder') folderTreeEl.classList.add('folder-tree-root-drag-over');
@@ -418,10 +426,195 @@
         folderTreeEl.addEventListener('drop', async (e) => {
             folderTreeEl.classList.remove('folder-tree-root-drag-over');
             if (e.target === folderTreeEl && draggedElement?.type === 'folder') {
-                await api.updateItem('folders', draggedElement.id, { parentId: 0 }); // Use 0 for root
+                await api.updateItem('folders', draggedElement.item.id, { parentId: 0 }); // Use 0 for root
                 await loadData();
             }
         });
+
+        function onFolderDragOver(e, targetFolder) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (!draggedElement) return;
+
+            const targetEl = e.currentTarget;
+            const rect = targetEl.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            const dropZoneHeight = rect.height;
+
+            // Define the threshold for reordering (e.g., 25% from top/bottom)
+            const reorderThreshold = dropZoneHeight * 0.25;
+
+            // Logic for moving a folder or bookmark into another folder
+            if ((draggedElement.type === 'folder' || draggedElement.type === 'bookmark') && y > reorderThreshold && y < dropZoneHeight - reorderThreshold) {
+                if (draggedElement.type === 'folder' && draggedElement.item.id === targetFolder.id) return; // Can't drop folder on itself
+                hideSeparator();
+                if (dragOverContainer !== targetEl) {
+                    dragOverContainer?.classList.remove('drag-over');
+                    dragOverContainer = targetEl;
+                    dragOverContainer.classList.add('drag-over');
+                }
+                dragAction = { type: 'move', targetId: targetFolder.id };
+            }
+            // Logic for reordering a folder
+            else if (draggedElement.type === 'folder') {
+                dragOverContainer?.classList.remove('drag-over');
+                dragOverContainer = null;
+                const isAfter = y > dropZoneHeight / 2;
+                const parentEl = targetEl.parentElement;
+
+                let children = Array.from(parentEl.children).filter(el => el.matches('[data-type="folder"]'));
+                let targetIndex = children.indexOf(targetEl);
+
+                let newPosition = isAfter ? targetIndex + 1 : targetIndex;
+
+                dragAction = {
+                    type: 'reorder',
+                    targetId: targetFolder.id,
+                    parentId: targetFolder.parentId,
+                    newPosition
+                };
+
+                let x = targetEl.getBoundingClientRect().left;
+                let elem_y = isAfter ? targetEl.getBoundingClientRect().bottom : targetEl.getBoundingClientRect().top;
+
+                showSeparator('horizontal', x, elem_y, targetEl.getBoundingClientRect().width);
+            }
+        }
+
+        function onFolderDragLeave(e) {
+            e.stopPropagation();
+            // Using a timeout to prevent flickering when moving over child elements
+            clearTimeout(dragTimeout);
+            dragTimeout = setTimeout(() => {
+                hideSeparator();
+                dragOverContainer?.classList.remove('drag-over');
+                dragOverContainer = null;
+                dragAction = null;
+            }, 50);
+        }
+
+        async function onFolderDrop(e, targetFolder) {
+            e.preventDefault();
+            e.stopPropagation();
+            hideSeparator();
+            dragOverContainer?.classList.remove('drag-over');
+
+            if (!draggedElement || !dragAction) return;
+
+            const { item: draggedItem, type: draggedType } = draggedElement;
+
+            try {
+                if (dragAction.type === 'move') {
+                    if (draggedType === 'folder') {
+                        await api.updateItem('folders', draggedItem.id, { parentId: dragAction.targetId });
+                    } else { // bookmark
+                        await api.updateItem('bookmarks', draggedItem.id, { folderId: dragAction.targetId });
+                    }
+                } else if (dragAction.type === 'reorder') {
+                    const parentId = targetFolder.parentId;
+                    const siblings = getSubFolders(parentId);
+                    let siblingIds = siblings.map(f => f.id);
+
+                    // Remove dragged item from its original position
+                    const originalIndex = siblingIds.indexOf(draggedItem.id);
+                    if (originalIndex > -1) {
+                        siblingIds.splice(originalIndex, 1);
+                    }
+
+                    // Calculate new position
+                    let targetIndex = siblingIds.indexOf(targetFolder.id);
+                    const isAfter = dragAction.newPosition > siblings.findIndex(s => s.id === targetFolder.id);
+
+                    if (isAfter) targetIndex++;
+
+                    // Insert at new position
+                    siblingIds.splice(targetIndex, 0, draggedItem.id);
+
+                    await api.reorderItems('folders', siblingIds);
+                }
+                await loadData();
+            } catch (error) {
+                console.error("Drop failed:", error);
+                alert("An error occurred. Please try again.");
+            } finally {
+                draggedElement = null;
+                dragAction = null;
+            }
+        }
+
+        bookmarkListEl.addEventListener('dragover', e => onBookmarkDragOver(e));
+        bookmarkListEl.addEventListener('drop', e => onBookmarkDrop(e));
+
+        function onBookmarkDragOver(e) {
+            e.preventDefault();
+
+            if (!draggedElement || draggedElement.type !== 'bookmark') return;
+
+            const container = e.currentTarget;
+            const containerRect = container.getBoundingClientRect();
+
+            const directChildren = Array.from(container.children);
+            const target = directChildren.find(child => {
+                const rect = child.getBoundingClientRect();
+                return e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+            });
+
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                const isVertical = container.clientHeight > container.clientWidth;
+                let pos, size;
+
+                if (isVertical) {
+                    pos = e.clientY - rect.top;
+                    size = rect.height;
+                } else {
+                    pos = e.clientX - rect.left;
+                    size = rect.width;
+                }
+
+                const isAfter = pos > size / 2;
+
+                const x = isVertical ? rect.left : (isAfter ? rect.right : rect.left);
+                const y = isVertical ? (isAfter ? rect.bottom : rect.top) : rect.top;
+                const length = isVertical ? rect.width : rect.height;
+
+                showSeparator(isVertical ? 'horizontal' : 'vertical', x, y, length);
+
+                dragAction = {
+                    type: 'reorder-bookmark',
+                    targetId: parseInt(target.dataset.id),
+                    isAfter
+                };
+
+            }
+        }
+
+        async function onBookmarkDrop(e) {
+            e.preventDefault();
+            hideSeparator();
+
+            if (!draggedElement || !dragAction || dragAction.type !== 'reorder-bookmark') return;
+
+            const { item: draggedItem } = draggedElement;
+            const { targetId, isAfter } = dragAction;
+
+            let siblings = getBookmarksInFolder(currentFolderId);
+            let siblingIds = siblings.map(b => b.id);
+
+            siblingIds = siblingIds.filter(id => id !== draggedItem.id);
+
+            const targetIndex = siblingIds.indexOf(targetId);
+
+            if (targetIndex !== -1) {
+                siblingIds.splice(targetIndex + (isAfter ? 1 : 0), 0, draggedItem.id);
+                await api.reorderItems('bookmarks', siblingIds);
+                await loadData();
+            }
+
+            draggedElement = null;
+            dragAction = null;
+        }
 
         // --- INITIALIZATION ---
         const loadData = async () => {
